@@ -1,6 +1,6 @@
 {
   "name": "pagelingo-deepseek-translate",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Translate web pages in place with your own DeepSeek API key.",
@@ -10,6 +10,8 @@
   "scripts": {
     "test": "node --test tests/*.test.js",
     "test:browser": "node tests/browser.mjs",
+    "test:follow": "node tests/follow-browser.mjs",
+    "test:follow:live": "node tests/follow-browser.mjs --live",
     "test:browser:live": "node tests/browser.mjs --live",
     "test:wikipedia:live": "node scripts/test-wikipedia.mjs",
     "test:live": "node scripts/test-live.mjs",

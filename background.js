@@ -1,6 +1,10 @@
 import {normalizeSettings, publicSettings} from "./lib/settings.js";
 import {requestTranslation, validateBlocks, PROMPT_VERSION} from "./lib/api.js";
 import {translateResilient} from "./lib/recovery.js";
+import {FollowNavigation} from "./lib/follow.js";
+
+const follow = new FollowNavigation(chrome, async () => publicSettings(await getSettings()));
+follow.register();
 
 const controllers = new Map();
 const cancelledJobs = new Set();
@@ -119,6 +123,13 @@ async function translate(message, sender) {
 async function handle(message, sender) {
   if (sender.id !== chrome.runtime.id) throw new Error("Unknown sender.");
   switch (message.type) {
+    case "PL_FOLLOW_STATUS":
+    case "PL_FOLLOW_SET": {
+      if (!isExtensionPage(sender)) throw new Error("Unsupported context.");
+      const state = await follow.enqueue(() => message.type === "PL_FOLLOW_SET"
+        ? follow.set(message.tabId, message.enabled === true) : follow.status(message.tabId));
+      return {follow: state};
+    }
     case "PL_PUBLIC_SETTINGS": return {settings: publicSettings(await getSettings())};
     case "PL_GET_SETTINGS": {
       if (!isExtensionPage(sender)) throw new Error("Settings are available only in extension pages.");

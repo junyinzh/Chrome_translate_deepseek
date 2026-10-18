@@ -2,7 +2,7 @@ name: Tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, developemnt]
   pull_request:
 
 permissions:
@@ -22,3 +22,4 @@ jobs:
       - run: npm run check:release
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
+      - run: npm run test:follow

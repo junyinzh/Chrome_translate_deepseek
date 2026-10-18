@@ -1,5 +1,29 @@
 # Verification record
 
+## Version 0.3.0 — link following (`developemnt`)
+
+Tested on 2026-10-18. The 19 unit tests and original 19 browser regression checks pass. The navigation suite adds 14 mock-provider checks; its live variant adds a 15th check using DeepSeek to translate the selected article and the article reached through its next link.
+
+`npm run test:follow` covers:
+
+- Default-off behavior and denied permission with working manual translation.
+- Popup activation, same-tab next links and reloads.
+- Child-tab inheritance with `rel=noopener`, while independent tabs stay untranslated.
+- Cross-origin links, server redirects and back navigation to a visited article.
+- SPA route changes; restore keeps the current document untranslated.
+- Session restoration after actual service-worker termination through the DevTools protocol.
+- Group-wide stop, including SPA updates and subsequent navigation in child tabs.
+- Address-bar-style navigation ending the tab's reading session.
+- No page JavaScript errors.
+
+The unit suite additionally covers stale document IDs, permission revocation, worker-state restoration, unknown history destinations and late child events after switching off. `npm run test:follow:live` uses a locally configured key for its last two documents; reports omit credentials.
+
+Headless Chrome cannot exercise the native permission dialog visually. The navigation fixture temporarily pregrants the requested optional permissions; it calls the real popup request path and separately stubs a denied response. The normal extension regression suite still loads the production optional-permission declaration without granting it. No test modifies the user's normal browser profile or the shipped permission manifest.
+
+Local evidence: `test-results/follow-browser-report.json`, `follow-browser-live-report.json` and `popup-follow.png`. GitHub Actions runs the unit, original browser and navigation suites on `main` and `developemnt` without credentials.
+
+## Version 0.2.0 baseline
+
 Version 0.2.0, tested on 2026-10-18 using Node.js and a real Chromium Manifest V3 extension in isolated temporary profiles.
 
 ## Reproduced Wikipedia failure

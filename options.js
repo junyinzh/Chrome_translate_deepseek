@@ -1,3 +1,4 @@
+document.querySelector(".version").textContent = `Chrome extension · v${chrome.runtime.getManifest().version}`;
 const $ = selector => document.querySelector(selector);
 
 function message(text, error = false) {

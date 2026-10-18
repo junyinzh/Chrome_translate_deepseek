@@ -1,9 +1,12 @@
+import {FOLLOW_PERMISSIONS} from "./lib/follow.js";
+
 const $ = selector => document.querySelector(selector);
 let tab;
 let settings;
 let pageStatus = {state: "idle", active: false, total: 0};
 let busy = false;
 let supported = false;
+let follow = {enabled: false, error: ""};
 
 function showError(message = "") {
   $("#error").textContent = message;
@@ -46,18 +49,42 @@ function render() {
   $("#restore").disabled = busy || !supported || !status.total;
   $("#language").disabled = busy || active;
   $("#scope").disabled = busy || active;
+  if (!busy) $("#follow-links").checked = follow.enabled;
+  $("#follow-links").disabled = busy || !/^https?:/.test(tab?.url || "") || (!settings?.hasApiKey && !follow.enabled);
+  $("#follow-hint").textContent = follow.error || "当前页及从它打开的页面。关闭会停止这组页面的自动翻译。";
   if (status.error) showError(status.error);
 }
 
 async function refresh() {
   if (busy || !supported) return;
   try {
-    const status = await page({type: "PL_PAGE_STATUS"});
-    if (status) { pageStatus = status; render(); }
+    const [status, state] = await Promise.all([page({type: "PL_PAGE_STATUS"}), background({type: "PL_FOLLOW_STATUS", tabId: tab.id})]);
+    follow = state.follow;
+    pageStatus = status || {state: "idle", active: false, total: 0};
+    render();
   } catch { /* A page navigation may disconnect the previous content script. */ }
 }
 
 $("#settings").addEventListener("click", () => chrome.runtime.openOptionsPage());
+$("#follow-links").addEventListener("change", async event => {
+  const enabled = event.target.checked;
+  busy = true;
+  showError();
+  render();
+  try {
+    // Chrome requires this request to originate directly in the user's gesture.
+    if (enabled && !await chrome.permissions.request(FOLLOW_PERMISSIONS)) {
+      throw new Error("未获得网页访问权限。手动翻译仍可正常使用。");
+    }
+    if (enabled) {
+      const saved = await background({type: "PL_SAVE_SETTINGS", settings: {targetLanguage: $("#language").value, scope: $("#scope").value}});
+      settings = saved.settings;
+    }
+    follow = (await background({type: "PL_FOLLOW_SET", tabId: tab.id, enabled})).follow;
+    pageStatus = await page({type: "PL_PAGE_STATUS"}) || pageStatus;
+  } catch (error) { showError(error.message); }
+  finally { busy = false; render(); }
+});
 $("#translate").addEventListener("click", async () => {
   busy = true;
   showError();
@@ -91,6 +118,7 @@ try {
   if (supported) {
     $("#site").textContent = tab.url.startsWith("file:") ? "本地网页" : new URL(tab.url).hostname;
     pageStatus = await page({type: "PL_PAGE_STATUS"}) || pageStatus;
+    follow = (await background({type: "PL_FOLLOW_STATUS", tabId: tab.id})).follow;
   }
   render();
   setInterval(refresh, 800);
