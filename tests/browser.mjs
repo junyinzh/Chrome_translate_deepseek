@@ -28,7 +28,8 @@ const manifest = JSON.parse(await readFile(join(extensionPath, "manifest.json"),
 manifest.host_permissions.push("http://127.0.0.1/*");
 await writeFile(join(extensionPath, "manifest.json"), JSON.stringify(manifest));
 const fixture = await readFile(join(root, "tests/fixture.html"));
-const server = createServer((request, response) => { response.writeHead(200, {"content-type": "text/html; charset=utf-8"}); response.end(fixture); });
+const wikiFixture = await readFile(join(root, "tests/wiki-fixture.html"));
+const server = createServer((request, response) => { response.writeHead(200, {"content-type": "text/html; charset=utf-8"}); response.end(request.url === "/wiki" ? wikiFixture : fixture); });
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 const url = `http://127.0.0.1:${server.address().port}/fixture`;
 const checks = [];
@@ -66,14 +67,23 @@ try {
     globalThis.fetch = async (url, init) => {
       if (url !== "https://api.deepseek.com/chat/completions") return globalThis.__originalFetch(url, init);
       const request = JSON.parse(init.body);
-      const {blocks} = JSON.parse(request.messages[1].content);
+      const input = JSON.parse(request.messages[1].content);
+      const blocks = input.blocks.map(block => ({...block, parts: Object.values(block.parts)}));
       globalThis.__apiCalls.push(blocks);
       if (globalThis.__testMode === "unauthorized") return new Response("Unauthorized", {status: 401});
       if (globalThis.__testMode === "slow") await new Promise((resolve, reject) => {
         const timer = setTimeout(resolve, 1800);
         init.signal.addEventListener("abort", () => { clearTimeout(timer); reject(new DOMException("Aborted", "AbortError")); }, {once: true});
       });
-      return new Response(JSON.stringify({choices: [{finish_reason: "stop", message: {content: JSON.stringify({translations: blocks.map(block => ({id: block.id, parts: block.parts.map(part => `译文：${part.trim()}`)}))})}}], usage: {prompt_tokens: 100, completion_tokens: 50, total_tokens: 150}}), {headers: {"Content-Type": "application/json"}});
+      if (globalThis.__testMode === "wiki-repair" && blocks.length === 1 && blocks[0].parts.length > 8) await new Promise(resolve => setTimeout(resolve, 650));
+      const translations = blocks.map(block => {
+        let parts = block.parts.map(part => `译文：${part.trim()}`);
+        if (globalThis.__testMode === "compact") parts = block.parts.map(() => "译文");
+        if (globalThis.__testMode === "wiki-repair" && parts.length > 8) parts = parts.slice(0, -1);
+        if (globalThis.__testMode === "wiki-fail" && block.parts.join("").includes("southern slopes")) parts = [];
+        return {id: block.id, parts};
+      });
+      return new Response(JSON.stringify({choices: [{finish_reason: "stop", message: {content: JSON.stringify({translations})}}], usage: {prompt_tokens: 100, completion_tokens: 50, total_tokens: 150}}), {headers: {"Content-Type": "application/json"}});
     };
   });
 
@@ -218,6 +228,105 @@ try {
   await waitComplete();
   check("viewport mode translates additional content when scrolling");
   await restore();
+
+  await page.goto(new URL("/wiki", url).href);
+  const wikiOriginal = await page.locator("body").innerHTML();
+  const citation = await page.locator(".reference").innerHTML();
+  await popup.reload();
+  await popup.waitForFunction(() => !document.querySelector("#translate").disabled);
+  await popup.locator("#scope").selectOption("page");
+  await clearCache();
+  await worker.evaluate(() => { globalThis.__testMode = "wiki-repair"; globalThis.__apiCalls = []; });
+  await popup.locator("#translate").click();
+  await page.waitForFunction(() => document.querySelector("#wiki-title").textContent.includes("译文"));
+  assert.equal((await page.locator("#wiki-lead").textContent()).includes("译文"), false);
+  const firstCalls = await worker.evaluate(() => globalThis.__apiCalls);
+  assert.equal(firstCalls[0].length, 2);
+  assert.equal(firstCalls[0][0].parts.join(""), "Riverton");
+  assert.match(firstCalls[0][1].parts.join(""), /is a small town/);
+  assert.equal(firstCalls[0][1].parts.join("").includes("[a]"), false);
+  check("encyclopedia title and lead are the first small batch, ahead of navigation and sidebars");
+  await waitComplete();
+  assert.equal((await status()).failed, 0);
+  assert.equal((await status()).recovered, 1);
+  assert.match(await page.locator("#wiki-lead").textContent(), /译文/);
+  assert.equal(await page.locator(".reference").innerHTML(), citation);
+  const repairCalls = await worker.evaluate(() => globalThis.__apiCalls);
+  assert.equal(repairCalls.flat().filter(block => block.parts.join("") === "Riverton").length, 1);
+  assert.ok(repairCalls.flat().some(block => block.context && block.parts.length <= 8));
+  check("valid neighbors appear during repair; only the complex lead is retried in smaller pieces");
+  await restore();
+  assert.equal(await page.locator("body").innerHTML(), wikiOriginal);
+  check("encyclopedia links, footnotes and body markup restore exactly after recovery");
+
+  // Warm the cache with the lead hidden, then reveal it for a mixed cached/live batch.
+  await clearCache();
+  await page.evaluate(() => { document.querySelector("#wiki-lead").hidden = true; document.querySelector("#wiki-second").hidden = true; });
+  await worker.evaluate(() => { globalThis.__testMode = "normal"; });
+  await popup.locator("#translate").click();
+  await waitComplete();
+  await restore();
+  await page.evaluate(() => { document.querySelector("#wiki-lead").hidden = false; document.querySelector("#wiki-second").hidden = false; });
+  await worker.evaluate(() => { globalThis.__testMode = "slow"; globalThis.__apiCalls = []; });
+  await popup.locator("#translate").click();
+  await page.waitForFunction(() => document.querySelector("#wiki-title").textContent.includes("译文"));
+  assert.equal((await page.locator("#wiki-lead").textContent()).includes("译文"), false);
+  await options.evaluate(tabId => chrome.tabs.sendMessage(tabId, {type: "PL_PAUSE"}), tabId);
+  await worker.evaluate(() => { globalThis.__testMode = "normal"; });
+  await popup.waitForFunction(() => document.querySelector("#translate").textContent === "继续翻译");
+  await popup.locator("#translate").click();
+  await waitComplete();
+  const resumed = await status();
+  assert.equal(resumed.processed, resumed.total);
+  assert.equal(resumed.translated, resumed.total);
+  assert.equal((await page.locator("#wiki-title").textContent()).match(/译文/g).length, 1);
+  check("cached text appears before network completion and partial-progress pause/resume counts each unit once");
+  await restore();
+
+  await clearCache();
+  await worker.evaluate(() => { globalThis.__testMode = "wiki-fail"; });
+  await popup.locator("#translate").click();
+  await waitState(["error"]);
+  assert.equal((await status()).failed, 1);
+  assert.match(await page.locator("#wiki-lead").textContent(), /译文/);
+  assert.equal((await page.locator("#wiki-second").textContent()).includes("译文"), false);
+  await worker.evaluate(() => { globalThis.__testMode = "normal"; globalThis.__apiCalls = []; });
+  await popup.waitForFunction(() => document.querySelector("#translate").textContent === "重试失败段落");
+  await popup.locator("#translate").click();
+  await waitComplete();
+  assert.equal((await worker.evaluate(() => globalThis.__apiCalls)).flat().length, 1);
+  assert.equal((await status()).processed, (await status()).total);
+  check("permanent paragraph failure does not discard its neighbors and manual retry sends only that paragraph");
+  await restore();
+
+  await clearCache();
+  await worker.evaluate(() => { globalThis.__testMode = "slow"; globalThis.__apiCalls = []; });
+  await popup.locator("#translate").click();
+  await waitState(["translating"]);
+  await page.locator("#wiki-bottom").scrollIntoViewIfNeeded();
+  await worker.evaluate(() => { globalThis.__testMode = "normal"; });
+  await waitComplete();
+  const scrollCalls = await worker.evaluate(() => globalThis.__apiCalls);
+  assert.match(scrollCalls[1].map(block => block.parts.join("")).join(""), /Later sections describe/);
+  check("whole-page mode reprioritizes queued body text after scrolling");
+  await restore();
+
+  await page.goto(url);
+  await page.evaluate(() => {
+    document.body.innerHTML = `<main style="width:350px"><h1>Reflow test</h1><p>${"A paragraph with many words. ".repeat(150)}</p><p id="revealed">Newly visible after the paragraph above shrinks.</p></main>`;
+  });
+  assert.ok(await page.locator("#revealed").evaluate(element => element.getBoundingClientRect().top > innerHeight));
+  await popup.reload();
+  await popup.waitForFunction(() => !document.querySelector("#translate").disabled);
+  await popup.locator("#scope").selectOption("viewport");
+  await clearCache();
+  await worker.evaluate(() => { globalThis.__testMode = "compact"; });
+  await popup.locator("#translate").click();
+  await waitComplete();
+  assert.equal(await page.locator("#revealed").textContent(), "译文");
+  check("viewport completion rescans text revealed by translation reflow without scrolling");
+  await restore();
+  await worker.evaluate(() => { globalThis.__testMode = "normal"; });
 
   await clearCache();
   if (live) await worker.evaluate(() => { globalThis.fetch = globalThis.__originalFetch; });

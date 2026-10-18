@@ -4,8 +4,9 @@
   const EXCLUDED = [
     "script", "style", "noscript", "textarea", "input", "select", "option", "pre", "code", "kbd", "samp",
     "svg", "math", "mjx-container", ".katex", ".MathJax", "[translate='no']", ".notranslate",
-    "[role='textbox']", "[data-pagelingo-ui]", "[inert]", "[hidden]",
+    "[role='textbox']", "[data-pagelingo-ui]", "[inert]", "[hidden]", ".reference", ".mw-ref",
   ].join(",");
+  const SECONDARY = "nav,aside,footer,[role='navigation'],[role='complementary'],.infobox,.sidebar,.navbox,.vertical-navbox,.hatnote,.mw-editsection,.mw-indicators,.catlinks,.printfooter,#coordinates,#siteSub,#contentSub,.vector-page-toolbar,.vector-dropdown,.vector-toc";
   const BLOCK_DISPLAY = /^(block|flow-root|flex|grid|list-item|table-cell|table-caption|table-row|inline-block|inline-flex|inline-grid)$/;
   const fatalCodes = new Set(["NO_API_KEY", "HTTP_400", "HTTP_401", "HTTP_402", "HTTP_403", "HTTP_404"]);
 
@@ -55,17 +56,20 @@
       this.state = "idle";
       this.error = "";
       this.scanTimer = null;
+      this.warmup = true;
+      this.retrying = new Set();
       this.observer = new MutationObserver(mutations => this.onMutations(mutations));
       this.onScroll = () => this.scheduleScan();
     }
 
     emptyStats() {
-      return {total: 0, processed: 0, translated: 0, failed: 0, cacheHits: 0, promptTokens: 0, completionTokens: 0};
+      return {total: 0, processed: 0, translated: 0, failed: 0, cacheHits: 0, promptTokens: 0, completionTokens: 0,
+        requests: 0, retries: 0, recovered: 0, errorCounts: {}};
     }
 
     status() {
       return {state: this.state, active: this.active, ...this.stats, queued: this.queue.length,
-        inFlight: this.inflight.size, error: this.error, targetLanguage: this.settings?.targetLanguage};
+        inFlight: this.inflight.size, retrying: this.retrying.size, error: this.error, targetLanguage: this.settings?.targetLanguage};
     }
 
     async start(settings) {
@@ -75,18 +79,20 @@
       this.settings = settings;
       this.active = true;
       this.error = "";
+      this.warmup = true;
       this.jobId = crypto.randomUUID();
       if (this.failedUnits.length) {
         this.stats.total -= this.failedUnits.length;
         this.stats.processed -= this.failedUnits.length;
         this.stats.failed = 0;
         this.queue.push(...this.failedUnits);
+        for (const unit of this.failedUnits) unit.settled = false;
         this.stats.total += this.failedUnits.length;
         this.failedUnits = [];
       }
       this.createToolbar();
       if (settings.dynamic) this.observer.observe(document.body || document.documentElement, {subtree: true, childList: true, characterData: true});
-      if (settings.scope === "viewport") window.addEventListener("scroll", this.onScroll, {passive: true, capture: true});
+      window.addEventListener("scroll", this.onScroll, {passive: true, capture: true});
       this.scan();
       this.pump();
       return this.status();
@@ -100,9 +106,10 @@
       window.removeEventListener("scroll", this.onScroll, true);
       clearTimeout(this.scanTimer);
       this.scanTimer = null;
-      const pending = [...this.inflight.values()].flat();
+      const pending = [...this.inflight.values()].flat().filter(unit => !unit.settled);
       this.queue.unshift(...pending);
       this.inflight.clear();
+      this.retrying.clear();
       if (oldJob) send({type: "PL_CANCEL_JOB", jobId: oldJob}).catch(() => {});
       this.state = this.stats.total ? "paused" : "idle";
       this.renderToolbar();
@@ -150,7 +157,7 @@
       return /\p{L}/u.test(text);
     }
 
-    scan() {
+    scan(pump = true) {
       if (!this.active || !document.body) return;
       const groups = new Map();
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -174,7 +181,7 @@
         let length = 0;
         const flush = () => {
           if (!entries.length) return;
-          units.push({id: `p${++this.serial}`, entries, length, top: element.getBoundingClientRect().top});
+          units.push({id: `p${++this.serial}`, entries, length, element, order: this.serial, settled: false});
           entries = [];
           length = 0;
         };
@@ -186,21 +193,17 @@
           this.byNode.set(node, record);
           this.records.add(record);
           for (let index = 0; index < pieces.length; index++) {
-            if (entries.length && (length + pieces[index].length > 3000 || entries.length >= 100)) flush();
+            if (entries.length && (length + pieces[index].length > 2400 || entries.length >= 50)) flush();
             entries.push({record, index, text: pieces[index]});
             length += pieces[index].length;
           }
         }
         flush();
       }
-      units.sort((a, b) => {
-        const rank = top => top >= -100 && top <= innerHeight ? 0 : top > innerHeight ? 1 : 2;
-        return rank(a.top) - rank(b.top) || Math.abs(a.top) - Math.abs(b.top);
-      });
       this.queue.push(...units);
       this.stats.total += units.length;
       this.pruneRecords();
-      this.pump();
+      if (pump) this.pump();
     }
 
     pruneRecords() {
@@ -227,24 +230,48 @@
       }, 600);
     }
 
+    sortQueue() {
+      for (const unit of this.queue) {
+        const {top, bottom} = unit.element.getBoundingClientRect();
+        const isSecondary = Boolean(unit.element.closest(SECONDARY));
+        const inArticle = Boolean(unit.element.closest("article,main,[role='main'],#mw-content-text"));
+        const isTitle = unit.element.matches("h1,#firstHeading") && !isSecondary;
+        const isBody = isTitle || (!isSecondary && (inArticle || unit.element.matches("p,h2,h3,h4,h5,h6,blockquote")));
+        const visible = bottom >= 0 && top < innerHeight;
+        unit.priority = isBody ? visible ? 0 : top >= innerHeight ? top < innerHeight * 2 ? 1 : 3 : 4
+          : visible ? 2 : 5;
+        unit.top = top;
+      }
+      // Recompute positions after page reflow or scrolling, not only at discovery.
+      this.queue.sort((a, b) => a.priority - b.priority || a.top - b.top || a.order - b.order);
+    }
+
     nextBatch() {
       const batch = [];
       let length = 0;
-      while (this.queue.length && batch.length < 10) {
+      let parts = 0;
+      const urgent = this.warmup || this.queue[0]?.priority === 0;
+      while (this.queue.length && batch.length < (urgent ? 2 : 4)) {
         const next = this.queue[0];
-        if (batch.length && length + next.length > 6500) break;
+        if (batch.length && (length + next.length > (urgent ? 2400 : 3600)
+          || parts + next.entries.length > 60 || next.priority !== batch[0].priority)) break;
         this.queue.shift();
         const valid = next.entries.some(entry => entry.record.node.isConnected && entry.record.node.data === entry.record.expected);
         if (!valid) { this.stats.processed++; continue; }
         batch.push(next);
         length += next.length;
+        parts += next.entries.length;
       }
       return batch;
     }
 
     pump() {
       if (!this.active) return;
-      while (this.inflight.size < this.settings.concurrency && this.queue.length) {
+      // Translation can shorten the page and reveal new text without a scroll.
+      if (this.settings.scope === "viewport" && !this.queue.length && !this.inflight.size) this.scan(false);
+      this.sortQueue();
+      // Finish one small opening batch before spending concurrency on later text.
+      while (this.inflight.size < (this.warmup ? 1 : this.settings.concurrency) && this.queue.length) {
         const batch = this.nextBatch();
         if (!batch.length) continue;
         const batchId = crypto.randomUUID();
@@ -272,6 +299,41 @@
       return applied;
     }
 
+    receiveProgress(message) {
+      if (this.jobId !== message.jobId) return;
+      const batch = this.inflight.get(message.batchId);
+      if (!batch) return;
+      if (message.phase === "retry") this.retrying.add(message.batchId);
+      if (message.phase === "request") this.retrying.delete(message.batchId);
+      this.acceptTranslations(batch, message.translations || []);
+      if (message.cacheHits) {
+        this.stats.cacheHits += Math.max(0, message.cacheHits - (batch.reportedCacheHits || 0));
+        batch.reportedCacheHits = message.cacheHits;
+      }
+      this.renderToolbar();
+    }
+
+    acceptTranslations(batch, translations) {
+      const byId = new Map(translations.map(item => [item.id, item.parts]));
+      for (const unit of batch) {
+        const parts = byId.get(unit.id);
+        if (unit.settled || !parts || parts.length !== unit.entries.length) continue;
+        if (this.apply(unit, parts)) this.stats.translated++;
+        this.stats.processed++;
+        unit.settled = true;
+      }
+    }
+
+    failUnits(units, message, code = "NETWORK_ERROR") {
+      for (const unit of units.filter(unit => !unit.settled)) {
+        unit.settled = true;
+        this.stats.failed++;
+        this.stats.processed++;
+        this.failedUnits.push(unit);
+      }
+      this.error = `${message} [${code}]`;
+    }
+
     async runBatch(batch, batchId, jobId) {
       try {
         const result = await send({type: "PL_TRANSLATE_BATCH", jobId, batchId, title: document.title,
@@ -281,24 +343,22 @@
         if (!result?.ok) {
           const error = new Error(result?.error || "翻译服务没有响应，请重试。");
           error.fatal = result?.fatal || fatalCodes.has(result?.code);
+          error.code = result?.code;
           throw error;
         }
-        const byId = new Map(result.translations.map(item => [item.id, item.parts]));
-        for (const unit of batch) {
-          const parts = byId.get(unit.id);
-          if (!parts || parts.length !== unit.entries.length) throw new Error("译文段落格式不匹配，请重试。");
-          if (this.apply(unit, parts)) this.stats.translated++;
-          this.stats.processed++;
+        this.acceptTranslations(batch, result.translations);
+        for (const unit of batch.filter(unit => !unit.settled)) {
+          const failure = result.errors?.find(item => item.id === unit.id);
+          this.failUnits([unit], failure?.error || "译文段落格式不匹配，请重试。", failure?.code || "INVALID_TRANSLATION");
         }
-        this.stats.cacheHits += result.cacheHits || 0;
+        this.stats.cacheHits += Math.max(0, (result.cacheHits || 0) - (batch.reportedCacheHits || 0));
         this.stats.promptTokens += result.usage?.prompt_tokens || 0;
         this.stats.completionTokens += result.usage?.completion_tokens || 0;
+        for (const field of ["requests", "retries", "recovered"]) this.stats[field] += result.diagnostics?.[field] || 0;
+        for (const [code, count] of Object.entries(result.diagnostics?.errorCounts || {})) this.stats.errorCounts[code] = (this.stats.errorCounts[code] || 0) + count;
       } catch (error) {
         if (this.jobId !== jobId) return;
-        this.error = error.message.includes("Extension context invalidated") ? "插件已更新，请刷新网页后重试。" : error.message;
-        this.stats.failed += batch.length;
-        this.stats.processed += batch.length;
-        this.failedUnits.push(...batch);
+        this.failUnits(batch, error.message.includes("Extension context invalidated") ? "插件已更新，请刷新网页后重试。" : error.message, error.code);
         if (error.fatal) {
           this.inflight.delete(batchId);
           this.pause();
@@ -307,6 +367,8 @@
         }
       } finally {
         if (this.jobId === jobId) {
+          this.warmup = false;
+          this.retrying.delete(batchId);
           this.inflight.delete(batchId);
           this.pump();
         }
@@ -346,10 +408,10 @@
       if (!this.toolbarRoot) return;
       const {total, processed, translated, failed, cacheHits} = this.stats;
       const labels = {idle: "原文显示中", paused: "翻译已暂停", error: this.error || "部分段落翻译失败", complete: total ? "当前内容已翻译" : "没有找到需要翻译的文字"};
-      const status = this.state === "translating" ? `正在翻译 · ${processed} / ${total} 段` : labels[this.state];
+      const status = this.state === "translating" ? `${this.retrying.size ? "正在修复个别段落" : "正文优先翻译"} · ${processed} / ${total} 段` : labels[this.state];
       this.toolbarRoot.querySelector(".status").textContent = status;
       this.toolbarRoot.querySelector(".fill").style.width = `${total ? Math.min(100, processed / total * 100) : 0}%`;
-      this.toolbarRoot.querySelector(".meta").textContent = `${translated} 段已替换${cacheHits ? ` · ${cacheHits} 段来自缓存` : ""}${failed ? ` · ${failed} 段失败` : ""}${this.active && this.settings.dynamic && this.state === "complete" ? " · 自动翻译新增内容" : ""}`;
+      this.toolbarRoot.querySelector(".meta").textContent = `${translated} 段已替换${cacheHits ? ` · ${cacheHits} 段来自缓存` : ""}${this.stats.recovered ? ` · ${this.stats.recovered} 段自动修复` : ""}${failed ? ` · ${failed} 段失败` : ""}${this.state === "translating" ? ` · ${this.inflight.size} 请求中` : ""}${this.active && this.settings.dynamic && this.state === "complete" ? " · 自动翻译新增内容" : ""}`;
       this.toolbarRoot.querySelector(".toggle").textContent = this.active ? "暂停" : failed ? "重试" : this.state === "paused" ? "继续翻译" : "翻译网页";
       this.toolbarRoot.querySelector(".restore").disabled = !this.records.size;
     }
@@ -359,6 +421,11 @@
   globalThis.__PAGELINGO_V1__ = translator;
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (sender.id !== chrome.runtime.id) return false;
+    if (message?.type === "PL_BATCH_PROGRESS") {
+      translator.receiveProgress(message);
+      sendResponse({ok: true});
+      return false;
+    }
     if (!["PL_PAGE_STATUS", "PL_START", "PL_PAUSE", "PL_RESTORE"].includes(message?.type)) return false;
     (async () => {
       if (message.type === "PL_START") return translator.start(message.settings);

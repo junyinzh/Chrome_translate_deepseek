@@ -1,5 +1,6 @@
 import {normalizeSettings, publicSettings} from "./lib/settings.js";
-import {requestTranslation, validateBlocks, PROMPT_VERSION, waitForRetry} from "./lib/api.js";
+import {requestTranslation, validateBlocks, PROMPT_VERSION} from "./lib/api.js";
+import {translateResilient} from "./lib/recovery.js";
 
 const controllers = new Map();
 const cancelledJobs = new Set();
@@ -68,6 +69,10 @@ async function translate(message, sender) {
   const settings = normalizeSettings({...storedSettings, ...message.preferences, apiKey: storedSettings.apiKey});
   const cache = await getCache();
   const keys = await Promise.all(message.blocks.map(block => cacheKey(block, settings, message.title)));
+  const keyById = new Map(message.blocks.map((block, i) => [block.id, keys[i]]));
+  const progress = update => chrome.tabs.sendMessage(sender.tab.id, {
+    type: "PL_BATCH_PROGRESS", jobId: message.jobId, batchId: message.batchId, ...update,
+  }, {frameId: 0}).catch(() => {});
   const translations = [];
   const missing = [];
   let cacheHits = 0;
@@ -78,40 +83,36 @@ async function translate(message, sender) {
       cacheHits++;
     } else missing.push(block);
   });
-  if (!missing.length) return {translations, cacheHits, usage: null};
+  if (cancelledJobs.has(`${sender.tab.id}:${message.jobId}`)) throw Object.assign(new Error("翻译已暂停。"), {code: "ABORTED"});
+  if (translations.length) await progress({translations, cacheHits});
+  if (!missing.length) return {translations, errors: [], cacheHits, usage: null};
   if (cancelledJobs.has(`${sender.tab.id}:${message.jobId}`)) throw Object.assign(new Error("翻译已暂停。"), {code: "ABORTED"});
   const id = `${sender.tab.id}:${message.jobId}:${message.batchId}`;
   const controller = new AbortController();
   controllers.set(id, controller);
   const releaseLease = holdRequestLease();
-  const timeout = setTimeout(() => controller.abort("timeout"), 90000);
-  let result;
+  const timeout = setTimeout(() => controller.abort("timeout"), 120000);
   try {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        result = await requestTranslation(missing, settings, {signal: controller.signal, title: message.title});
-        break;
-      } catch (error) {
-        if (controller.signal.aborted) {
-          const timeout = controller.signal.reason === "timeout";
-          throw Object.assign(new Error(timeout ? "翻译请求超时，请稍后重试。" : "翻译已暂停。"), {code: timeout ? "TIMEOUT" : "ABORTED"});
-        }
-        const retryable = error.retryable || error instanceof TypeError;
-        if (!retryable || attempt === 2) throw error;
-        await waitForRetry(900 * 2 ** attempt, controller.signal);
-      }
-    }
+    const result = await translateResilient(missing, settings, {
+      signal: controller.signal, title: message.title,
+      onProgress: async update => {
+        for (const item of update.translations || []) cache.set(keyById.get(item.id), item.parts);
+        await progress(update);
+      },
+    });
     translations.push(...result.translations);
-    for (let i = 0; i < message.blocks.length; i++) {
-      const translated = result.translations.find(item => item.id === message.blocks[i].id);
-      if (translated) cache.set(keys[i], translated.parts);
+    return {...result, translations, cacheHits};
+  } catch (error) {
+    if (controller.signal.aborted) {
+      const timedOut = controller.signal.reason === "timeout";
+      throw Object.assign(new Error(timedOut ? "自动修复超时，请重试剩余段落。" : "翻译已暂停。"), {code: timedOut ? "TIMEOUT" : "ABORTED"});
     }
-    await persistCache(cache).catch(() => {});
-    return {translations, cacheHits, usage: result.usage};
+    throw error;
   } finally {
     clearTimeout(timeout);
     releaseLease();
     controllers.delete(id);
+    await persistCache(cache).catch(() => {});
   }
 }
 

@@ -2,7 +2,9 @@
 
 A Chrome extension that translates web pages in place using your own DeepSeek API key. It keeps the existing page structure, including links and inline formatting, and lets you restore the original text with one click.
 
-[MIT License](LICENSE) · [中文安装指南](INSTALL.html) · [Implementation notes](PLAN.md) · [Testing](TESTING.md)
+[MIT License](LICENSE) · [中文安装指南](INSTALL.html) · [Implementation notes](PLAN.md) · [Testing](TESTING.md) · [Changelog](CHANGELOG.md)
+
+**Version 0.2.0:** article-first scheduling, smaller opening requests, numbered text fragments and automatic repair of individual failed paragraphs. Reload the extension and refresh existing web pages after updating.
 
 <img src="docs/images/popup.png" alt="PageLingo popup after translating a page" width="340">
 
@@ -43,10 +45,12 @@ The interface is currently in Chinese. Translation targets include Simplified Ch
 
 - In-place translation with one-click restoration.
 - Paragraph-level context across inline text fragments.
+- Article text before navigation and sidebars, with the title and opening paragraph in a small first request when visible.
 - Preservation of existing link and emphasis elements and their event listeners.
 - Whole-page and viewport translation modes.
 - Optional translation of dynamically inserted or updated text.
 - Pause, resume, cancellation and retry of failed paragraphs.
+- Independent paragraph validation, immediate delivery of valid/cached results and automatic repair of malformed results.
 - Persistent translation cache to avoid repeated API calls.
 - Configurable concurrency, progress display and token counts.
 - A terminology glossary for consistent technical translations.
@@ -58,7 +62,11 @@ The default model is `deepseek-flash`. `deepseek-v4-pro` is also available in se
 
 ## How it works
 
-The popup activates a content script for the current tab. The script collects eligible text nodes, groups their fragments into paragraphs, and sends batches to the extension's background worker. The worker calls the official DeepSeek API and validates the returned paragraph ids and fragment counts before applying the translation.
+The popup activates a content script for the current tab. The script collects eligible text nodes, groups their fragments into paragraphs, and prioritizes visible article text over navigation and sidebars. It starts with at most two units in one request; subsequent requests use up to four units, with smaller batches for visible body text. Queue positions are updated as the page reflows or the reader scrolls.
+
+Each fragment has an explicit numeric key, so hyperlinks and punctuation have a stable correspondence. The worker validates each paragraph independently and delivers valid results while repairing failed neighbors. A failed paragraph is retried alone, then in groups of at most eight fragments with full-paragraph context. Cached paragraphs are delivered before the remaining network work finishes. Requests still need a complete, validated JSON response; partial tokens are not inserted into the page.
+
+This favors time to readable article text. Smaller requests and repair attempts can increase request count and prompt-token overhead; they do not guarantee faster completion of the entire page. Current-viewport mode rescans after translations shorten the layout and expose more text.
 
 Translations are written into existing text nodes. The extension retains original text and restores it only when a node still contains its last expected value, so independent site updates are not overwritten with stale text.
 
@@ -75,7 +83,7 @@ The production manifest requests `activeTab`, `scripting` and `storage`, plus ac
 
 ## Update a local installation
 
-Pull or download the updated files, click the extension's reload button on `chrome://extensions`, and refresh the web page you want to translate. Unpacked extension updates are manual.
+Pull or download the updated files, click the extension's reload button on `chrome://extensions`, and refresh the web page you want to translate. Unpacked extension updates are manual. Version 0.2.0 keeps existing settings and uses a new cache version automatically; clearing the cache or entering the key again is unnecessary.
 
 ## Development
 
@@ -95,9 +103,10 @@ To run real API checks, set `DEEPSEEK_API_KEY` in your local environment or copy
 ```bash
 npm run test:live
 npm run test:browser:live
+npm run test:wikipedia:live
 ```
 
-The optional local configuration file also provides first-install settings when loading the extension. It is not required when configuring through the options page. An existing installation retains its saved settings; edit them through the options page.
+The Wikipedia test opens the live St. Moritz article in a temporary profile, translates its viewport, measures time to the first translated lead, and checks exact restoration and link identity. It requires external access and is not run in CI. The optional local configuration file also provides first-install settings when loading the extension. It is not required when configuring through the options page. An existing installation retains its saved settings; edit them through the options page.
 
 Reports and screenshots are generated in the ignored `test-results/` directory. Before publishing changes, run `npm run check:release` to check indexed files for local configuration and API keys. `node scripts/check-release.mjs --history` additionally checks reachable Git history.
 
