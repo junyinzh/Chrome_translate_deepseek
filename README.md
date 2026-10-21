@@ -4,7 +4,7 @@ A Chrome extension that translates web pages in place using your own DeepSeek AP
 
 [MIT License](LICENSE) · [中文安装指南](INSTALL.html) · [Implementation notes](PLAN.md) · [Testing](TESTING.md) · [Changelog](CHANGELOG.md)
 
-**Version 0.2.0:** article-first scheduling, smaller opening requests, numbered text fragments and automatic repair of individual failed paragraphs. Reload the extension and refresh existing web pages after updating.
+**Version 0.3.1, branch `main`:** translate up to 12 batches concurrently, with 12 as the default for new installations. Optional automatic translation of linked pages, article-first scheduling and individual-paragraph recovery remain available. Existing installations keep their saved concurrency; choose **12** in settings after reloading the extension.
 
 <img src="docs/images/popup.png" alt="PageLingo popup after translating a page" width="340">
 
@@ -36,10 +36,25 @@ API keys are supplied by each user; none is included in this repository. Transla
 | **恢复原文** | Restore the original text |
 | **整个页面** | Translate rendered text in the loaded document, including text below the fold |
 | **当前可见内容** | Translate the viewport, discovering more text as you scroll |
+| **点开链接后自动翻译** | Translate this page and continue on linked pages, including new tabs |
 
-Closing the popup does not stop translation. A small panel in the lower-right corner of the page provides pause and restore controls. Refreshing the page also returns to the original content.
+Closing the popup does not stop translation. A small panel in the lower-right corner of the page provides pause and restore controls. Refreshing returns to the original content unless automatic link following is enabled.
 
 The interface is currently in Chinese. Translation targets include Simplified Chinese, Traditional Chinese, English, German, French, Japanese and Spanish.
+
+## Keep translating linked articles
+
+<img src="docs/images/popup-follow.png" alt="PageLingo popup with automatic translation of linked pages enabled" width="340">
+
+1. Open an article and turn on **点开链接后自动翻译** in the popup.
+2. On first use, Chrome asks for optional navigation and HTTP/HTTPS page-access permissions. Accept to enable automatic starts on destination pages, including other websites. Declining leaves manual translation available.
+3. The current page starts translating. Follow a link to the next article, open one in a new tab, or follow a redirect; translation starts after the destination document is ready.
+
+The switch applies to this reading group. Independently opened tabs are unaffected. Turning it off in any member pauses translation throughout the group, keeps existing translated text visible and stops automatic starts on subsequent links. Pause/restore controls affect the current document; they do not end automatic translation of later linked pages.
+
+Reloads and back/forward navigation to visited articles continue the session. Typing a new address, opening a bookmark, or submitting a full-page form ends following in that tab. Session state survives extension-worker suspension but is cleared when Chrome restarts or the extension reloads. SPA article changes use navigation events and the existing dynamic-content scanner; leave dynamic translation enabled for articles inserted asynchronously.
+
+This feature starts disabled. Browser-internal pages, PDFs, local files and iframe navigation are outside its scope. The extension requests optional access through Chrome's normal permission dialog only when you turn on the switch.
 
 ## Features
 
@@ -48,11 +63,12 @@ The interface is currently in Chinese. Translation targets include Simplified Ch
 - Article text before navigation and sidebars, with the title and opening paragraph in a small first request when visible.
 - Preservation of existing link and emphasis elements and their event listeners.
 - Whole-page and viewport translation modes.
+- Optional link-following translation across pages and child tabs, with per-reading-group controls.
 - Optional translation of dynamically inserted or updated text.
 - Pause, resume, cancellation and retry of failed paragraphs.
 - Independent paragraph validation, immediate delivery of valid/cached results and automatic repair of malformed results.
 - Persistent translation cache to avoid repeated API calls.
-- Configurable concurrency, progress display and token counts.
+- Configurable concurrency from 1 to 12 batches (default: 12), progress display and token counts.
 - A terminology glossary for consistent technical translations.
 - Exclusion of inputs, editable regions, code, formulas, hidden content and `translate="no"` regions.
 
@@ -70,7 +86,7 @@ This favors time to readable article text. Smaller requests and repair attempts 
 
 Translations are written into existing text nodes. The extension retains original text and restores it only when a node still contains its last expected value, so independent site updates are not overwritten with stale text.
 
-The production manifest requests `activeTab`, `scripting` and `storage`, plus access to `https://api.deepseek.com/*`. The API key stays in extension-local settings; requests go directly to DeepSeek. Source text and the page title are included in translation requests. There is no application server or analytics service.
+Manual translation requests `activeTab`, `scripting` and `storage`, plus access to `https://api.deepseek.com/*`. Link following additionally requests optional `webNavigation`, `http://*/*` and `https://*/*` access when enabled. It tracks selected tabs in `chrome.storage.session` and injects only into matching top-level documents. The API key stays in extension-local settings; requests go directly to DeepSeek. Source text and the page title are included in translation requests. There is no application server or analytics service.
 
 ## Limitations
 
@@ -83,7 +99,9 @@ The production manifest requests `activeTab`, `scripting` and `storage`, plus ac
 
 ## Update a local installation
 
-Pull or download the updated files, click the extension's reload button on `chrome://extensions`, and refresh the web page you want to translate. Unpacked extension updates are manual. Version 0.2.0 keeps existing settings and uses a new cache version automatically; clearing the cache or entering the key again is unnecessary.
+Download the `main` branch ZIP, or switch your clone to `main` and pull the updated files. Click the extension's reload button on `chrome://extensions`, and refresh the web page you want to translate. Unpacked extension updates are manual. Existing settings and the API key are retained. Enable link following again after reloading the extension.
+
+For version 0.3.1, open extension settings, set **同时翻译的批次** to **12** and save to use the higher concurrency. Saved lower values are preserved during the update. New installations start at 12 automatically. The opening batch still finishes before concurrent batches start; this prioritizes the article title and lead paragraph.
 
 ## Development
 
@@ -94,6 +112,7 @@ npm ci
 npm test
 npx playwright install chromium
 npm run test:browser
+npm run test:follow
 ```
 
 Browser tests run in a temporary Chromium profile against a local HTML fixture. They use a mock provider by default and require no API key. The temporary test manifest grants access to localhost; the production manifest is unchanged.
@@ -104,6 +123,7 @@ To run real API checks, set `DEEPSEEK_API_KEY` in your local environment or copy
 npm run test:live
 npm run test:browser:live
 npm run test:wikipedia:live
+npm run test:follow:live
 ```
 
 The Wikipedia test opens the live St. Moritz article in a temporary profile, translates its viewport, measures time to the first translated lead, and checks exact restoration and link identity. It requires external access and is not run in CI. The optional local configuration file also provides first-install settings when loading the extension. It is not required when configuring through the options page. An existing installation retains its saved settings; edit them through the options page.
@@ -118,6 +138,7 @@ Reports and screenshots are generated in the ignored `test-results/` directory. 
 | `background.js` | API calls, cache, retries and cancellation |
 | `content.js` | Text discovery, replacement, restore and floating controls |
 | `lib/` | Settings and provider request/response handling |
+| `lib/follow.js` | Optional navigation following and session state |
 | `popup.*`, `options.*`, `ui.css` | Popup and settings interface |
 | `tests/`, `scripts/` | Verification and development helpers |
 | `local-config.example.json` | Optional configuration template with an empty key |
@@ -134,6 +155,8 @@ Issues and focused pull requests are welcome. For website compatibility problems
 
 - [Chrome content scripts](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts)
 - [Chrome activeTab permission](https://developer.chrome.com/docs/extensions/develop/concepts/activeTab)
+- [Chrome optional permissions](https://developer.chrome.com/docs/extensions/reference/api/permissions)
+- [Chrome navigation events](https://developer.chrome.com/docs/extensions/reference/api/webNavigation)
 - [Chrome extension network requests](https://developer.chrome.com/docs/extensions/develop/concepts/network-requests)
 - [Chrome local installation](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world#load-unpacked)
 - [DeepSeek Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/)

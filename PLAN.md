@@ -70,6 +70,18 @@ Translation cache keys cover the prompt version, model, target language, glossar
 - Viewport mode leaves below-the-fold text unchanged until it becomes visible.
 - The full extension-to-DeepSeek-to-page path works with a locally configured key.
 
+## Optional navigation following (0.3.0)
+
+The popup requests optional `webNavigation` and HTTP/HTTPS host access directly from the switch's user gesture. It asks the worker to start a reading group rooted in the selected tab. Ordinary manual translation does not require these permissions.
+
+`lib/follow.js` serializes toggle/navigation events and stores tab membership, visited URLs and handled document/URL pairs in `chrome.storage.session`. Committed link/reload navigations continue the group; typed addresses, bookmarks, form submissions and unknown history destinations leave it. `onCreatedNavigationTarget` carries the group to a child tab, including `rel=noopener` links. DOM-ready/completed events trigger document-targeted injection and automatic start; history-state events rescan SPA routes. Document IDs prevent an old readiness event from starting translation in a replacement page. Duplicate readiness events are deduplicated.
+
+Turning off the switch deletes every member of that reading group and pauses their content scripts. Removing the optional permission clears all groups and pauses their work. Closing a tab removes its membership; other members continue independently. Worker restart restores the session map; browser/extension restart clears it.
+
+The content script remembers a current-document automatic-start suppression flag after pause/restore. Explicit manual start clears it. This prevents a late readiness or SPA event from undoing the user's choice to view the original. The next full document can still start automatically while the group remains enabled.
+
+Permission/native-dialog behavior and site-specific router timing are separate from provider behavior. Headless navigation tests pregrant permissions in the temporary manifest, exercise the popup's request path and a denied-request stub, and test actual browser navigation events against local fixture pages.
+
 ## Deferred scope
 
 PDF and image translation, nested frames, shadow DOM, additional site-specific adapters, automatic site language rules, bilingual layout and Chrome Web Store publication are subsequent features. The current deliverable is a loadable local extension with a documented installation path.

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.1 — 2026-10-21
+
+- Promote optional link-following translation from `developemnt` to the `main` release.
+- Raise the per-page concurrency limit from 3 to 12 batches and default new installations to 12.
+- Offer every concurrency value from 1 to 12 in settings while preserving existing saved choices.
+- Retain the small opening batch before concurrent work starts.
+- Record repeated live API and isolated Chromium measurements in [TESTING.md](TESTING.md), and document the reload and settings steps for existing installations.
+
+## 0.3.0 — 2026-10-18 (`developemnt`)
+
+- Add an opt-in **点开链接后自动翻译** popup switch, with Chrome's optional permission request on first use.
+- Automatically translate linked documents in the same tab and child tabs, including cross-origin links and redirects.
+- Keep reading-group state in session storage across worker suspension; keep unrelated tabs out of the group.
+- Stop a tab's following on address-bar/bookmark/form navigation. Retain following for reloads and known back/forward destinations.
+- Stop the entire group's automatic work when its switch is turned off while preserving displayed translations.
+- Respect pause and restore within the current document, including SPA route changes.
+- Add navigation regression tests and CI for the new branch. Show the current manifest version in settings.
+
 ## 0.2.0 — 2026-10-18
 
 ### Article reading order

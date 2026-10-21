@@ -58,6 +58,7 @@
       this.scanTimer = null;
       this.warmup = true;
       this.retrying = new Set();
+      this.autoSuppressed = false;
       this.observer = new MutationObserver(mutations => this.onMutations(mutations));
       this.onScroll = () => this.scheduleScan();
     }
@@ -72,9 +73,11 @@
         inFlight: this.inflight.size, retrying: this.retrying.size, error: this.error, targetLanguage: this.settings?.targetLanguage};
     }
 
-    async start(settings) {
+    async start(settings, automatic = false) {
+      if (automatic && this.autoSuppressed) return this.status();
       if (!settings.hasApiKey) throw new Error("请先在设置中填写 API Key。");
       if (this.settings && signature(this.settings) !== signature(settings)) this.restore();
+      this.autoSuppressed = false;
       if (this.active) return this.status();
       this.settings = settings;
       this.active = true;
@@ -99,6 +102,7 @@
     }
 
     pause() {
+      this.autoSuppressed = true;
       const oldJob = this.jobId;
       this.active = false;
       this.jobId = null;
@@ -426,9 +430,14 @@
       sendResponse({ok: true});
       return false;
     }
-    if (!["PL_PAGE_STATUS", "PL_START", "PL_PAUSE", "PL_RESTORE"].includes(message?.type)) return false;
+    if (!["PL_PAGE_STATUS", "PL_START", "PL_AUTO_START", "PL_PAUSE", "PL_RESTORE"].includes(message?.type)) return false;
     (async () => {
       if (message.type === "PL_START") return translator.start(message.settings);
+      if (message.type === "PL_AUTO_START") {
+        const status = await translator.start(message.settings, true);
+        if (translator.active) translator.scheduleScan();
+        return status;
+      }
       if (message.type === "PL_PAUSE") return translator.pause();
       if (message.type === "PL_RESTORE") return translator.restore();
       return translator.status();
