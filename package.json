@@ -1,6 +1,6 @@
 {
   "name": "pagelingo-deepseek-translate",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "Translate web pages in place with your own DeepSeek API key.",

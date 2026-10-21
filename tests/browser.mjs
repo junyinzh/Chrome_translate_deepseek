@@ -50,6 +50,9 @@ try {
   await options.goto(`chrome-extension://${id}/options.html`);
   await options.waitForFunction(() => !document.querySelector("#key-hint").textContent.includes("正在"));
   assert.equal(await options.locator("#api-key").inputValue(), "");
+  assert.equal(await options.locator("#concurrency").inputValue(), "12");
+  assert.deepEqual(await options.locator("#concurrency option").evaluateAll(options => options.map(option => Number(option.value))),
+    Array.from({length: 12}, (_, index) => index + 1));
   await options.locator("#api-key").fill(apiKey);
   await options.locator("#save").click();
   await options.waitForFunction(() => document.querySelector("#message").textContent.startsWith("设置已保存"));
@@ -59,6 +62,7 @@ try {
   const publicSettings = await options.evaluate(() => chrome.runtime.sendMessage({type: "PL_PUBLIC_SETTINGS"}));
   assert.equal(publicSettings.ok, true);
   assert.equal(publicSettings.settings.apiKey, undefined);
+  assert.equal(publicSettings.settings.concurrency, 12);
 
   await worker.evaluate(() => {
     globalThis.__originalFetch = globalThis.fetch;

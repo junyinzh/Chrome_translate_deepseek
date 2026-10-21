@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1 — 2026-10-21 (`developemnt`)
+
+- Raise the per-page concurrency limit from 3 to 12 batches and default new installations to 12.
+- Offer every concurrency value from 1 to 12 in settings while preserving existing saved choices.
+- Retain the small opening batch before concurrent work starts.
+- Record repeated live API and isolated Chromium measurements in [TESTING.md](TESTING.md), and document the reload and settings steps for existing installations.
+
 ## 0.3.0 — 2026-10-18 (`developemnt`)
 
 - Add an opt-in **点开链接后自动翻译** popup switch, with Chrome's optional permission request on first use.

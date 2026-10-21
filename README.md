@@ -4,7 +4,7 @@ A Chrome extension that translates web pages in place using your own DeepSeek AP
 
 [MIT License](LICENSE) · [中文安装指南](INSTALL.html) · [Implementation notes](PLAN.md) · [Testing](TESTING.md) · [Changelog](CHANGELOG.md)
 
-**Version 0.3.0, branch `developemnt`:** optional automatic translation of pages opened from the current article. Article-first scheduling and individual-paragraph recovery remain available. Reload the extension and refresh existing web pages after updating.
+**Version 0.3.1, branch `developemnt`:** translate up to 12 batches concurrently, with 12 as the default for new installations. Optional automatic translation of linked pages, article-first scheduling and individual-paragraph recovery remain available. Existing installations keep their saved concurrency; choose **12** in settings after reloading the extension.
 
 <img src="docs/images/popup.png" alt="PageLingo popup after translating a page" width="340">
 
@@ -68,7 +68,7 @@ This feature starts disabled. Browser-internal pages, PDFs, local files and ifra
 - Pause, resume, cancellation and retry of failed paragraphs.
 - Independent paragraph validation, immediate delivery of valid/cached results and automatic repair of malformed results.
 - Persistent translation cache to avoid repeated API calls.
-- Configurable concurrency, progress display and token counts.
+- Configurable concurrency from 1 to 12 batches (default: 12), progress display and token counts.
 - A terminology glossary for consistent technical translations.
 - Exclusion of inputs, editable regions, code, formulas, hidden content and `translate="no"` regions.
 
@@ -100,6 +100,8 @@ Manual translation requests `activeTab`, `scripting` and `storage`, plus access 
 ## Update a local installation
 
 Select the `developemnt` branch before downloading its ZIP, or switch your clone to that branch. Pull the updated files, click the extension's reload button on `chrome://extensions`, and refresh the web page you want to translate. Unpacked extension updates are manual. Existing settings and the API key are retained. Enable link following again after reloading the extension.
+
+For version 0.3.1, open extension settings, set **同时翻译的批次** to **12** and save to use the higher concurrency. Saved lower values are preserved during the update. New installations start at 12 automatically. The opening batch still finishes before concurrent batches start; this prioritizes the article title and lead paragraph.
 
 ## Development
 

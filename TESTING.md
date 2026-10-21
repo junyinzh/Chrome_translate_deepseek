@@ -1,5 +1,25 @@
 # Verification record
 
+## Version 0.3.1 — higher translation concurrency (`developemnt`)
+
+Verified on 2026-10-21: all 19 unit tests, 19 browser regression checks and 14 link-following browser checks pass. Settings checks cover the new default of 12, the full 1–12 selector, upper/lower bounds and preservation of saved lower values.
+
+Live performance measurements used `deepseek-flash` and a frozen [St. Moritz article](https://en.wikipedia.org/wiki/St._Moritz) body: 33 text units, 375 fragments and 13,345 source characters. The v0.3.0 implementation was tested with only its concurrency limit raised in an isolated copy; article-first scheduling, the serial opening batch, prompts, validation and recovery were retained.
+
+| Concurrent batches | Fixed-batch median, 3 runs | Range | Isolated Chromium extension, 1 run |
+| --- | --- | --- | --- |
+| 3 | 10.727 s | 10.677–11.195 s | 10.839 s |
+| 6 | 6.347 s | 6.195–6.582 s | 6.699 s |
+| 12 | 5.159 s | 4.727–5.233 s | 5.240 s |
+
+Fixed-batch runs replayed the same 12 batches through the original API and recovery functions, rotating concurrency order as 3/6/12, 12/3/6 and 6/12/3. Each run used 9,103 input tokens; output token counts varied slightly. Extension-local translation caching was bypassed, while provider-side input caching remained enabled. The first run had fewer provider cache hits; rotation and medians reduce that ordering effect.
+
+The real extension loaded the same frozen HTML in an isolated Chromium profile, clearing its translation cache between runs. All 33 units translated with no failures, retries or local cache hits; exact original-markup restoration passed. Reflow changed grouping to 13 requests at concurrency 3 versus 12 requests at 6/12. The fixed-batch comparison excludes this variable.
+
+In this sample, 12 reduced median completion time by 51.9% versus 3 and 18.7% versus 6. Only 11 batches remain after the opening batch, so concurrency above 12 cannot add parallel work here. These measurements do not establish an optimum for other pages, models or service conditions, and translation semantics were not manually scored. The limit is per page; concurrent tabs have separate queues.
+
+Existing installations retain their saved concurrency. Reload the extension, select **12** under **同时翻译的批次**, save and refresh the article. New installations use 12 automatically.
+
 ## Version 0.3.0 — link following (`developemnt`)
 
 Tested on 2026-10-18. The 19 unit tests and original 19 browser regression checks pass. The navigation suite adds 14 mock-provider checks; its live variant adds a 15th check using DeepSeek to translate the selected article and the article reached through its next link.

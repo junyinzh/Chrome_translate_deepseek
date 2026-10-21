@@ -73,7 +73,12 @@ test("request validation bounds cost and rejects duplicate ids", () => {
 });
 
 test("public settings omit credentials and clamp concurrency", () => {
-  assert.equal(normalizeSettings({concurrency: 900}).concurrency, 3);
+  assert.equal(normalizeSettings().concurrency, 12);
+  assert.equal(normalizeSettings({concurrency: "invalid"}).concurrency, 12);
+  assert.equal(normalizeSettings({concurrency: 900}).concurrency, 12);
+  assert.equal(normalizeSettings({concurrency: -1}).concurrency, 1);
+  assert.equal(normalizeSettings({concurrency: 2}).concurrency, 2);
+  assert.equal(normalizeSettings({concurrency: "6"}).concurrency, 6);
   assert.equal(normalizeSettings({targetLanguage: "unknown"}).targetLanguage, "zh-Hans");
   assert.equal(publicSettings(settings).apiKey, undefined);
   assert.equal(publicSettings(settings).hasApiKey, true);
